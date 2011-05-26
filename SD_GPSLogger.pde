@@ -3,95 +3,48 @@
 // this is a generic logger that does checksum testing so the data written should be always good
 // Assumes a sirf III chipset logger attached to pin 0 and 1
 
-#include <SdFat.h>
-#include <SdFatUtil.h>
+#include <SD.h>
 #include <avr/sleep.h>
+#include "GPSconfig.h"
 
-// macros to use PSTR
-#define putstring(str) SerialPrint_P(PSTR(str))
-#define putstring_nl(str) SerialPrintln_P(PSTR(str))
+// Make sure to install newsoftserial from Mikal Hart
+// http://arduiniana.org/libraries/NewSoftSerial/
+#include <NewSoftSerial.h>
 
 // power saving modes
 #define SLEEPDELAY 0
 #define TURNOFFGPS 0
-#define LOG_RMC_FIXONLY 1
+#define LOG_RMC_FIXONLY 0
 
-Sd2Card card;
-SdVolume volume;
-SdFile root;
-SdFile f;
+// what to log
+#define LOG_RMC 1 // RMC-Recommended Minimum Specific GNSS Data, message 103,04
+#define LOG_GGA 0 // GGA-Global Positioning System Fixed Data, message 103,00
+#define LOG_GLL 0 // GLL-Geographic Position-Latitude/Longitude, message 103,01
+#define LOG_GSA 0 // GSA-GNSS DOP and Active Satellites, message 103,02
+#define LOG_GSV 0 // GSV-GNSS Satellites in View, message 103,03
+#define LOG_VTG 0 // VTG-Course Over Ground and Ground Speed, message 103,05
 
-#define led1Pin 4
-#define led2Pin 3
-#define powerPin 2
 
-#define BUFFSIZE 75
+
+// Use pins 2 and 3 to talk to the GPS. 2 is the TX pin, 3 is the RX pin
+NewSoftSerial gpsSerial =  NewSoftSerial(2, 3);
+// Set the GPSRATE to the baud rate of the GPS module. Most are 4800
+// but some are 38400 or other. Check the datasheet!
+#define GPSRATE 4800
+
+// Set the pins used 
+#define powerPin 4
+#define led1Pin 5
+#define led2Pin 6
+#define chipSelect 10
+
+
+#define BUFFSIZE 90
 char buffer[BUFFSIZE];
 uint8_t bufferidx = 0;
 uint8_t fix = 0; // current fix data
 uint8_t i;
-
-/* EXAMPLE
-
-$PSRF103,<msg>,<mode>,<rate>,<cksumEnable>*CKSUM<CR><LF>
-
-<msg> 00=GGA,01=GLL,02=GSA,03=GSV,04=RMC,05=VTG
-<mode> 00=SetRate,01=Query
-<rate> Output every <rate>seconds, off=00,max=255
-<cksumEnable> 00=disable Checksum,01=Enable checksum for specified message
-Note: checksum is required
-
-Example 1: Query the GGA message with checksum enabled
-$PSRF103,00,01,00,01*25
-
-Example 2: Enable VTG message for a 1Hz constant output with checksum enabled
-$PSRF103,05,00,01,01*20
-
-Example 3: Disable VTG message
-$PSRF103,05,00,00,01*21
-
-*/
-
-#define SERIAL_SET   "$PSRF100,01,4800,08,01,00*0E\r\n"
-
-// GGA-Global Positioning System Fixed Data, message 103,00
-#define LOG_GGA 0
-#define GGA_ON   "$PSRF103,00,00,01,01*25\r\n"
-#define GGA_OFF  "$PSRF103,00,00,00,01*24\r\n"
-
-// GLL-Geographic Position-Latitude/Longitude, message 103,01
-#define LOG_GLL 0
-#define GLL_ON   "$PSRF103,01,00,01,01*26\r\n"
-#define GLL_OFF  "$PSRF103,01,00,00,01*27\r\n"
-
-// GSA-GNSS DOP and Active Satellites, message 103,02
-#define LOG_GSA 0
-#define GSA_ON   "$PSRF103,02,00,01,01*27\r\n"
-#define GSA_OFF  "$PSRF103,02,00,00,01*26\r\n"
-
-// GSV-GNSS Satellites in View, message 103,03
-#define LOG_GSV 0
-#define GSV_ON   "$PSRF103,03,00,01,01*26\r\n"
-#define GSV_OFF  "$PSRF103,03,00,00,01*27\r\n"
-
-// RMC-Recommended Minimum Specific GNSS Data, message 103,04
-#define LOG_RMC 1
-#define RMC_ON   "$PSRF103,04,00,01,01*21\r\n"
-#define RMC_OFF  "$PSRF103,04,00,00,01*20\r\n"
-
-// VTG-Course Over Ground and Ground Speed, message 103,05
-#define LOG_VTG 0
-#define VTG_ON   "$PSRF103,05,00,01,01*20\r\n"
-#define VTG_OFF  "$PSRF103,05,00,00,01*21\r\n"
-
-// Switch Development Data Messages On/Off, message 105
-#define LOG_DDM 1
-#define DDM_ON   "$PSRF105,01*3E\r\n"
-#define DDM_OFF  "$PSRF105,00*3F\r\n"
-
-#define USE_WAAS   0     // useful in US, but slower fix
-#define WAAS_ON    "$PSRF151,01*3F\r\n"       // the command for turning on WAAS
-#define WAAS_OFF   "$PSRF151,00*3E\r\n"       // the command for turning off WAAS
+File logfile;
 
 // read a Hex value and return the decimal equivalent
 uint8_t parseHex(char c) {
@@ -107,12 +60,14 @@ uint8_t parseHex(char c) {
 
 // blink out an error code
 void error(uint8_t errno) {
-  if (card.errorCode()) {
+/*
+  if (SD.errorCode()) {
     putstring("SD error: ");
     Serial.print(card.errorCode(), HEX);
     Serial.print(',');
     Serial.println(card.errorData(), HEX);
   }
+  */
   while(1) {
     for (i=0; i<errno; i++) {
       digitalWrite(led1Pin, HIGH);
@@ -131,91 +86,97 @@ void error(uint8_t errno) {
 void setup() {
   WDTCSR |= (1 << WDCE) | (1 << WDE);
   WDTCSR = 0;
-  Serial.begin(4800);
-  putstring_nl("\r\nGPSlogger");
+  Serial.begin(9600);
+  Serial.println("\r\nGPSlogger");
   pinMode(led1Pin, OUTPUT);
   pinMode(led2Pin, OUTPUT);
   pinMode(powerPin, OUTPUT);
   digitalWrite(powerPin, LOW);
 
-  // initialize the SD card at SPI_HALF_SPEED to avoid bus errors with
-  // breadboards.  use SPI_FULL_SPEED for better performance.
-  if (!card.init(SPI_HALF_SPEED)) {
-    putstring_nl("Card init. failed!");
+  // make sure that the default chip select pin is set to
+  // output, even if you don't use it:
+  pinMode(10, OUTPUT);
+  
+  // see if the card is present and can be initialized:
+  if (!SD.begin(chipSelect)) {
+    Serial.println("Card init. failed!");
     error(1);
   }
-  if (!volume.init(&card)) {
-    putstring_nl("No partition!");
-    error(2);
-  }
-  if(!root.openRoot(&volume)) {
-    putstring_nl("Can't! open root dir");
-    error(3);
-  }
+
   strcpy(buffer, "GPSLOG00.TXT");
   for (i = 0; i < 100; i++) {
     buffer[6] = '0' + i/10;
     buffer[7] = '0' + i%10;
     // create if does not exist, do not open existing, write, sync after write
-    if (f.open(&root, buffer, O_CREAT | O_EXCL | O_WRITE | O_SYNC)) break;
+    if (! SD.exists(buffer)) {
+      break;
+    }
   }
-  
-  if(!f.isOpen()) {
-    putstring("couldnt create "); Serial.println(buffer);
+
+  logfile = SD.open(buffer, FILE_WRITE);
+  if( ! logfile ) {
+    Serial.print("Couldnt create "); Serial.println(buffer);
     error(3);
   }
-  putstring("writing to "); Serial.println(buffer);
-  putstring_nl("ready!");
+  Serial.print("Writing to "); Serial.println(buffer);
   
-  putstring(SERIAL_SET);
+  // connect to the GPS at the desired rate
+  gpsSerial.begin(GPSRATE);
+  
+  Serial.println("Ready!");
+  
+  gpsSerial.print(SERIAL_SET);
   delay(250);
 
-  if (LOG_DDM)
-    putstring(DDM_ON);
-  else
-    putstring(DDM_OFF);
+#if (LOG_DDM == 1)
+     gpsSerial.print(DDM_ON);
+#else
+     gpsSerial.print(DDM_OFF);
+#endif
+  delay(250);
+#if (LOG_GGA == 1)
+    gpsSerial.print(GGA_ON);
+#else
+    gpsSerial.print(GGA_OFF);
+#endif
+  delay(250);
+#if (LOG_GLL == 1)
+    gpsSerial.print(GLL_ON);
+#else
+    gpsSerial.print(GLL_OFF);
+#endif
+  delay(250);
+#if (LOG_GSA == 1)
+    gpsSerial.print(GSA_ON);
+#else
+    gpsSerial.print(GSA_OFF);
+#endif
+  delay(250);
+#if (LOG_GSV == 1)
+    gpsSerial.print(GSV_ON);
+#else
+    gpsSerial.print(GSV_OFF);
+#endif
+  delay(250);
+#if (LOG_RMC == 1)
+    gpsSerial.print(RMC_ON);
+#else
+    gpsSerial.print(RMC_OFF);
+#endif
   delay(250);
 
-  if (LOG_GGA)
-    putstring(GGA_ON);
-  else
-    putstring(GGA_OFF);
+#if (LOG_VTG == 1)
+    gpsSerial.print(VTG_ON);
+#else
+    gpsSerial.print(VTG_OFF);
+#endif
   delay(250);
 
-  if (LOG_GLL)
-    putstring(GLL_ON);
-  else
-    putstring(GLL_OFF);
-  delay(250);
-
-  if (LOG_GSA)
-    putstring(GSA_ON);
-  else
-    putstring(GSA_OFF);
-  delay(250);
-
-  if (LOG_GSV)
-    putstring(GSV_ON);
-  else
-    putstring(GSV_OFF);
-  delay(250);
-
-  if (LOG_RMC)
-    putstring(RMC_ON);
-  else
-    putstring(RMC_OFF);
-  delay(250);
-
-  if (LOG_VTG)
-    putstring(VTG_ON);
-  else
-    putstring(VTG_OFF);
-  delay(250);
-
-  if (USE_WAAS)
-    putstring(WAAS_ON);
-  else
-    putstring(WAAS_OFF);
+#if (USE_WAAS == 1)
+    gpsSerial.print(WAAS_ON);
+#else
+    gpsSerial.print(WAAS_OFF);
+#endif
 }
 
 void loop() {
@@ -224,12 +185,12 @@ void loop() {
   uint8_t sum;
 
   // read one 'line'
-  if (Serial.available()) {
-    c = Serial.read();
+  if (gpsSerial.available()) {
+    c = gpsSerial.read();
     //Serial.print(c, BYTE);
     if (bufferidx == 0) {
       while (c != '$')
-        c = Serial.read(); // wait till we get a $
+        c = gpsSerial.read(); // wait till we get a $
     }
     buffer[bufferidx] = c;
 
@@ -290,10 +251,13 @@ void loop() {
       // Bill Greiman - need to write bufferidx + 1 bytes to getCR/LF
       bufferidx++;
 
-      if(f.write((uint8_t *) buffer, bufferidx) != bufferidx) {
+      logfile.write((uint8_t *) buffer, bufferidx);
+      /*
+      if( != bufferidx) {
          putstring_nl("can't write!");
          error(4);
       }
+*/
 
       digitalWrite(led2Pin, LOW);
 
