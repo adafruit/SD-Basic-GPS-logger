@@ -1,7 +1,7 @@
 // Ladyada's logger modified by Bill Greiman to use the SdFat library
 
 // this is a generic logger that does checksum testing so the data written should be always good
-// Assumes a sirf III chipset logger attached to pin 0 and 1
+// Assumes a sirf III chipset logger attached to pin 2 and 3
 
 #include <SD.h>
 #include <avr/sleep.h>
@@ -252,12 +252,13 @@ void loop() {
       bufferidx++;
 
       logfile.write((uint8_t *) buffer, bufferidx);
+      logfile.flush();
       /*
       if( != bufferidx) {
          putstring_nl("can't write!");
          error(4);
       }
-*/
+      */
 
       digitalWrite(led2Pin, LOW);
 
