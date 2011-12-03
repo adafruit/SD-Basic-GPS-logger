@@ -7,9 +7,14 @@
 #include <avr/sleep.h>
 #include "GPSconfig.h"
 
-// Make sure to install newsoftserial from Mikal Hart
+// If using Arduino IDE prior to 1.0,
+// make sure to install newsoftserial from Mikal Hart
 // http://arduiniana.org/libraries/NewSoftSerial/
-#include <NewSoftSerial.h>
+#if ARDUINO >= 100
+ #include <SoftwareSerial.h>
+#else
+ #include <NewSoftSerial.h>
+#endif
 
 // power saving modes
 #define SLEEPDELAY 0
@@ -27,7 +32,11 @@
 
 
 // Use pins 2 and 3 to talk to the GPS. 2 is the TX pin, 3 is the RX pin
-NewSoftSerial gpsSerial =  NewSoftSerial(2, 3);
+#if ARDUINO >= 100
+ SoftwareSerial gpsSerial =  SoftwareSerial(2, 3);
+#else
+ NewSoftSerial gpsSerial =  NewSoftSerial(2, 3);
+#endif
 // Set the GPSRATE to the baud rate of the GPS module. Most are 4800
 // but some are 38400 or other. Check the datasheet!
 #define GPSRATE 4800
@@ -187,14 +196,22 @@ void loop() {
   // read one 'line'
   if (gpsSerial.available()) {
     c = gpsSerial.read();
+#if ARDUINO >= 100
+    //Serial.write(c);
+#else
     //Serial.print(c, BYTE);
+#endif
     if (bufferidx == 0) {
       while (c != '$')
         c = gpsSerial.read(); // wait till we get a $
     }
     buffer[bufferidx] = c;
 
+#if ARDUINO >= 100
+    //Serial.write(c);
+#else
     //Serial.print(c, BYTE);
+#endif
     if (c == '\n') {
       //putstring_nl("EOL");
       //Serial.print(buffer);
@@ -202,7 +219,7 @@ void loop() {
 
       if (buffer[bufferidx-4] != '*') {
         // no checksum?
-        Serial.print('*', BYTE);
+        Serial.print('*');
         bufferidx = 0;
         return;
       }
@@ -216,7 +233,7 @@ void loop() {
       }
       if (sum != 0) {
         //putstring_nl("Cxsum mismatch");
-        Serial.print('~', BYTE);
+        Serial.print('~');
         bufferidx = 0;
         return;
       }
@@ -238,14 +255,14 @@ void loop() {
       }
       if (LOG_RMC_FIXONLY) {
         if (!fix) {
-          Serial.print('_', BYTE);
+          Serial.print('_');
           bufferidx = 0;
           return;
         }
       }
       // rad. lets log it!
       Serial.print(buffer);
-      Serial.print('#', BYTE);
+      Serial.print('#');
       digitalWrite(led2Pin, HIGH);      // sets the digital pin as output
 
       // Bill Greiman - need to write bufferidx + 1 bytes to getCR/LF
@@ -269,13 +286,13 @@ void loop() {
         digitalWrite(powerPin, HIGH);
       }
 
-      sleep_sec(SLEEPDELAY);
+      delay(SLEEPDELAY * 1000);
       digitalWrite(powerPin, LOW);
       return;
     }
     bufferidx++;
     if (bufferidx == BUFFSIZE-1) {
-       Serial.print('!', BYTE);
+       Serial.print('!');
        bufferidx = 0;
     }
   } else {
