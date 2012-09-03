@@ -17,9 +17,9 @@
 #endif
 
 // power saving modes
-#define SLEEPDELAY 0
-#define TURNOFFGPS 0
-#define LOG_RMC_FIXONLY 0
+#define SLEEPDELAY 0    /* power-down time in seconds. Max 65535. Ignored if TURNOFFGPS == 0 */
+#define TURNOFFGPS 0    /* set to 1 to enable powerdown of arduino and GPS. Ignored if SLEEPDELAY == 0 */
+#define LOG_RMC_FIXONLY 0  /* set to 1 to only log to SD when GPD has a fix */
 
 // what to log
 #define LOG_RMC 1 // RMC-Recommended Minimum Specific GNSS Data, message 103,04
@@ -51,7 +51,8 @@
 #define BUFFSIZE 90
 char buffer[BUFFSIZE];
 uint8_t bufferidx = 0;
-uint8_t fix = 0; // current fix data
+bool fix = false; // current fix data
+bool gotGPRMC;    //true if current data is a GPRMC strinng
 uint8_t i;
 File logfile;
 
@@ -239,18 +240,19 @@ void loop() {
       }
       // got good data!
 
-      if (strstr(buffer, "GPRMC")) {
+      gotGPRMC = strstr(buffer, "GPRMC");
+      if (gotGPRMC) {
         // find out if we got a fix
         char *p = buffer;
         p = strchr(p, ',')+1;
         p = strchr(p, ',')+1;       // skip to 3rd item
-
+        
         if (p[0] == 'V') {
           digitalWrite(led1Pin, LOW);
-          fix = 0;
+          fix = false;
         } else {
           digitalWrite(led1Pin, HIGH);
-          fix = 1;
+          fix = true;
         }
       }
       if (LOG_RMC_FIXONLY) {
@@ -261,34 +263,47 @@ void loop() {
         }
       }
       // rad. lets log it!
-      Serial.print(buffer);
+      
+      Serial.print(buffer);    //first, write it to the serial monitor
       Serial.print('#');
-      digitalWrite(led2Pin, HIGH);      // sets the digital pin as output
+      
+      if (gotGPRMC)      //If we have a GPRMC string
+      {
+        // Bill Greiman - need to write bufferidx + 1 bytes to getCR/LF
+        bufferidx++;
 
-      // Bill Greiman - need to write bufferidx + 1 bytes to getCR/LF
-      bufferidx++;
+        digitalWrite(led2Pin, HIGH);      // Turn on LED 2 (indicates write to SD)
 
-      logfile.write((uint8_t *) buffer, bufferidx);
-      logfile.flush();
-      /*
-      if( != bufferidx) {
-         putstring_nl("can't write!");
-         error(4);
-      }
-      */
+        logfile.write((uint8_t *) buffer, bufferidx);    //write the string to the SD file
+        logfile.flush();
+        /*
+        if( != bufferidx) {
+           putstring_nl("can't write!");
+           error(4);
+        }
+        */
 
-      digitalWrite(led2Pin, LOW);
+        digitalWrite(led2Pin, LOW);    //turn off LED2 (write to SD is finished)
 
-      bufferidx = 0;
+        bufferidx = 0;    //reset buffer pointer
 
-      // turn off GPS module?
-      if (TURNOFFGPS) {
-        digitalWrite(powerPin, HIGH);
-      }
+        if (fix) {  //(don't sleep if there's no fix)
+          
+          if ((TURNOFFGPS) && (SLEEPDELAY)) {      // turn off GPS module? 
+          
+            digitalWrite(powerPin, HIGH);  //turn off GPS
 
-      delay(SLEEPDELAY * 1000);
-      digitalWrite(powerPin, LOW);
-      return;
+            delay(100);  //wait for serial monitor write to finish
+            sleep_sec(SLEEPDELAY);  //turn off CPU
+  
+            digitalWrite(powerPin, LOW);  //turn on GPS
+          } //if (TURNOFFGPS) 
+         
+        } //if (fix)
+        
+        return;
+      }//if (gotGPRMC)
+      
     }
     bufferidx++;
     if (bufferidx == BUFFSIZE-1) {
@@ -301,16 +316,16 @@ void loop() {
 
 }
 
-void sleep_sec(uint8_t x) {
+void sleep_sec(uint16_t x) {
   while (x--) {
      // set the WDT to wake us up!
     WDTCSR |= (1 << WDCE) | (1 << WDE); // enable watchdog & enable changing it
     WDTCSR = (1<< WDE) | (1 <<WDP2) | (1 << WDP1);
     WDTCSR |= (1<< WDIE);
     set_sleep_mode(SLEEP_MODE_PWR_DOWN);
-    sleep_enable();
+ //   sleep_enable();
     sleep_mode();
-    sleep_disable();
+//    sleep_disable();
   }
 }
 
